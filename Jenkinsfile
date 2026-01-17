@@ -183,12 +183,12 @@ pipeline {
                 script {
                     sh """
                         # Stop and remove old container if exists
-                        docker stop myapp-demo || true
-                        docker rm myapp-demo || true
+                        docker stop myapp || true
+                        docker rm myapp || true
                         
                         # Run new container
                         docker run -d \
-                          --name myapp-demo \
+                          --name myapp \
                           --restart unless-stopped \
                           -p 3000:3000 \
                           -e APP_VERSION=${APP_VERSION} \
@@ -197,7 +197,7 @@ pipeline {
                         
                         # Verify deployment
                         sleep 3
-                        docker ps | grep myapp-demo
+                        docker ps | grep myapp
                         curl -f http://localhost:3000/health
                         
                         echo "✅ Deployment successful!"
