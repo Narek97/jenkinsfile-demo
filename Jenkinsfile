@@ -65,7 +65,7 @@ pipeline {
                 # Start container
                 docker run -d \
                   --name test-container-${BUILD_NUMBER} \
-                  -p 3001:3000 \
+                  -p 3000:3000 \
                   -e APP_VERSION=${APP_VERSION} \
                   -e BUILD_NUMBER=${BUILD_NUMBER} \
                   ${DOCKER_IMAGE}:${DOCKER_TAG}
@@ -78,7 +78,7 @@ pipeline {
                         sleep 2
                         
                         # Try to connect
-                        if curl -f http://localhost:3001/health 2>/dev/null || curl -f http://localhost:3001/ 2>/dev/null; then
+                        if curl -f http://localhost:3000/health 2>/dev/null || curl -f http://localhost:3000/ 2>/dev/null; then
                             echo "✅ App is responding!"
                             break
                         fi
@@ -95,8 +95,8 @@ pipeline {
                 # Final health check
                 echo ""
                 echo "=== Testing Endpoints ==="
-                curl -v http://localhost:3001/health || echo "Health endpoint failed"
-                curl -v http://localhost:3001/ || echo "Main endpoint failed"
+                curl -v http://localhost:3000/health || echo "Health endpoint failed"
+                curl -v http://localhost:3000/ || echo "Main endpoint failed"
                 
                 # Check if container is still running
                 echo ""
