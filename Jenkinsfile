@@ -1,17 +1,18 @@
 pipeline {
     agent any
-    
+
     environment {
         // Docker image details
-        DOCKER_IMAGE = 'myapp'
-        DOCKER_TAG = "${BUILD_NUMBER}"
-        DOCKER_REGISTRY = 'docker.io'  // Change to your registry
-        
+        DOCKER_IMAGE    = 'myapp'
+        DOCKER_TAG      = "${BUILD_NUMBER}"
+        DOCKER_REGISTRY = 'docker.io'
+
         // Application version
         APP_VERSION = "1.0.${BUILD_NUMBER}"
     }
-    
+
     stages {
+
         stage('🔍 Environment Check') {
             steps {
                 echo '=== Checking Docker Environment ==='
@@ -23,25 +24,20 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('📋 Checkout') {
             steps {
                 echo 'Checking out source code...'
-                // If using Git, uncomment:
                 // git branch: 'main',
                 //     credentialsId: 'github-credentials',
                 //     url: 'https://github.com/YOUR-USERNAME/YOUR-REPO.git'
-                
-                // For now, we'll assume code is in workspace
                 sh 'ls -la'
             }
         }
-        
+
         stage('🔨 Build Docker Image') {
             steps {
-                echo 'Building Docker image...'
                 script {
-                    // Build image with build number as tag
                     sh """
                         docker build \
                           --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
@@ -50,143 +46,81 @@ pipeline {
                           -t ${DOCKER_IMAGE}:latest \
                           .
                     """
-                    
-                    // List images
                     sh 'docker images | grep ${DOCKER_IMAGE}'
                 }
             }
         }
-        
+
         stage('🧪 Test Docker Image') {
-    steps {
-        echo 'Testing Docker image...'
-        script {
-            sh """
-                # Start container
-                docker run -d \
-                  --name test-container-${BUILD_NUMBER} \
-                  -p 3000:3000 \
-                  -e APP_VERSION=${APP_VERSION} \
-                  -e BUILD_NUMBER=${BUILD_NUMBER} \
-                  ${DOCKER_IMAGE}:${DOCKER_TAG}
-                
-                # Wait for container to be healthy (max 30 seconds)
-                echo "Waiting for container to start..."
-                for i in {1..30}; do
-                    if docker ps | grep test-container-${BUILD_NUMBER} | grep -q "Up"; then
-                        echo "Container is running, waiting for app to be ready..."
-                        sleep 2
-                        
-                        # Try to connect
-                        if curl -f http://localhost:3000/health 2>/dev/null || curl -f http://localhost:3000/ 2>/dev/null; then
-                            echo "✅ App is responding!"
-                            break
-                        fi
-                    fi
-                    echo "Attempt \$i/30..."
-                    sleep 1
-                done
-                
-                # Check container logs
-                echo ""
-                echo "=== Container Logs ==="
-                docker logs test-container-${BUILD_NUMBER}
-                
-                # Final health check
-                echo ""
-                echo "=== Testing Endpoints ==="
-                curl -v http://localhost:3000/health || echo "Health endpoint failed"
-                curl -v http://localhost:3000/ || echo "Main endpoint failed"
-                
-                # Check if container is still running
-                echo ""
-                echo "=== Container Status ==="
-                docker ps -a | grep test-container-${BUILD_NUMBER}
-                
-                echo "✅ Container tests completed!"
-            """
+            steps {
+                script {
+                    sh """
+                        docker run -d \
+                          --name test-container-${BUILD_NUMBER} \
+                          -p 3000:3000 \
+                          -e APP_VERSION=${APP_VERSION} \
+                          -e BUILD_NUMBER=${BUILD_NUMBER} \
+                          ${DOCKER_IMAGE}:${DOCKER_TAG}
+
+                        echo "Waiting for container..."
+                        for i in {1..30}; do
+                            if docker ps | grep test-container-${BUILD_NUMBER} | grep -q "Up"; then
+                                if curl -f http://localhost:3000/health || curl -f http://localhost:3000/; then
+                                    echo "✅ App is responding"
+                                    break
+                                fi
+                            fi
+                            echo "Attempt \$i/30"
+                            sleep 1
+                        done
+
+                        docker logs test-container-${BUILD_NUMBER}
+                        docker ps -a | grep test-container-${BUILD_NUMBER}
+                    """
+                }
+            }
+            post {
+                always {
+                    sh """
+                        docker logs test-container-${BUILD_NUMBER} || true
+                        docker stop test-container-${BUILD_NUMBER} || true
+                        docker rm test-container-${BUILD_NUMBER} || true
+                    """
+                }
+            }
         }
-    }
-    post {
-        always {
-            sh """
-                echo "=== Final Container Logs ==="
-                docker logs test-container-${BUILD_NUMBER} || true
-                
-                docker stop test-container-${BUILD_NUMBER} || true
-                docker rm test-container-${BUILD_NUMBER} || true
-            """
-        }
-    }
-}
-        
+
         stage('🔍 Security Scan') {
             steps {
-                echo 'Scanning image for vulnerabilities...'
-                script {
-                    // Basic image inspection
-                    sh """
-                        echo "=== Image Details ==="
-                        docker inspect ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        echo "=== Image History ==="
-                        docker history ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        echo "=== Image Size ==="
-                        docker images ${DOCKER_IMAGE}:${DOCKER_TAG} --format "{{.Size}}"
-                    """
-                    
-                    // In production, you would use tools like:
-                    // - Trivy: docker run aquasec/trivy image ${DOCKER_IMAGE}:${DOCKER_TAG}
-                    // - Snyk: snyk container test ${DOCKER_IMAGE}:${DOCKER_TAG}
-                }
+                sh """
+                    docker inspect ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    docker history ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    docker images ${DOCKER_IMAGE}:${DOCKER_TAG} --format "{{.Size}}"
+                """
             }
         }
-        
+
         stage('📤 Push to Registry') {
             when {
-                expression { 
-                    // Only push on master/main branch
-                    return env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'origin/master' || env.BRANCH_NAME == 'main'
+                expression {
+                    env.GIT_BRANCH == 'origin/main' ||
+                    env.GIT_BRANCH == 'origin/master' ||
+                    env.BRANCH_NAME == 'main'
                 }
             }
             steps {
-                echo 'Pushing image to Docker registry...'
-                script {
-                    // In production, use withCredentials to login to registry
-                    // For now, we'll skip the actual push
-                    echo "Would push: ${DOCKER_IMAGE}:${DOCKER_TAG}"
-                    echo "Would push: ${DOCKER_IMAGE}:latest"
-                    
-                    // Uncomment when ready to push:
-                    /*
-                    withCredentials([usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        sh '''
-                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                            docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
-                            docker push ${DOCKER_IMAGE}:latest
-                            docker logout
-                        '''
-                    }
-                    */
-                }
+                echo "Would push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                echo "Would push ${DOCKER_IMAGE}:latest"
             }
         }
-        
+
         stage('🚀 Deploy (Local Test)') {
             steps {
-                echo 'Deploying container locally...'
                 script {
                     sh """
-                        # Stop and remove old container if exists
                         docker stop myapp-demo || true
                         docker rm myapp-demo || true
-                        
-                        # Run new container
+
                         docker run -d \
                           --name myapp-demo \
                           --restart unless-stopped \
@@ -194,45 +128,30 @@ pipeline {
                           -e APP_VERSION=${APP_VERSION} \
                           -e BUILD_NUMBER=${BUILD_NUMBER} \
                           ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        # Verify deployment
-                        sleep 3
+
+                        sleep 5
                         docker ps | grep myapp-demo
-                        curl -f http://localhost:3000/health
-                        
-                        echo "✅ Deployment successful!"
-                        echo "🌐 Access at: http://localhost:3000"
+                        docker logs --tail 20 myapp-demo
                     """
                 }
             }
         }
     }
-    
+
     post {
         success {
-            echo '======================================'
-            echo '✅ DOCKER PIPELINE SUCCEEDED!'
+            echo '✅ DOCKER PIPELINE SUCCEEDED'
             echo "Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
             echo "Version: ${APP_VERSION}"
-            echo "Access app at: http://localhost:3000"
-            echo '======================================'
         }
-        
+
         failure {
-            echo '======================================'
-            echo '❌ DOCKER PIPELINE FAILED!'
-            echo "Check logs for details"
-            echo '======================================'
+            echo '❌ DOCKER PIPELINE FAILED'
         }
-        
+
         always {
-            echo 'Cleaning up...'
             sh '''
-                # Remove dangling images
                 docker image prune -f || true
-                
-                # Show current images
-                echo "=== Current Docker Images ==="
                 docker images
             '''
         }
