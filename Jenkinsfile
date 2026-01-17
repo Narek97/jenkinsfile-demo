@@ -1,48 +1,51 @@
 pipeline {
     agent any
-    
+
+    tools {
+        nodejs 'NodeJS_18'   // Make sure this Node version exists in Jenkins
+    }
+
     stages {
+
         stage('Checkout') {
             steps {
-                git 'https://github.com/do-community/flask-hello-world.git'
+                git branch: 'main',
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/Narek97/my-app-front.git'
             }
         }
-        
-        stage('Setup') {
+
+        stage('Install dependencies') {
             steps {
                 sh '''
-                    python3 -m venv venv
-                    . venv/bin/activate
-                    pip install -r requirements.txt
+                    npm install
                 '''
             }
         }
-        
-        stage('Test') {
+
+        stage('Build') {
             steps {
                 sh '''
-                    . venv/bin/activate
-                    # Add your test commands here
-                    python3 -m pytest --version || echo "No tests found"
+                    npm run build
                 '''
             }
         }
-        
-        stage('Run') {
+
+        stage('Run (check)') {
             steps {
                 sh '''
-                    . venv/bin/activate
-                    python3 app.py &
-                    sleep 3
-                    curl http://localhost:5000 || echo "App running"
+                    npm run start &
+                    sleep 5
+                    curl http://localhost:3000 || echo "App started"
+                    pkill -f "next start" || true
                 '''
             }
         }
     }
-    
+
     post {
         always {
-            sh 'rm -rf venv' // Cleanup
+            sh 'rm -rf node_modules .next'
         }
     }
 }
