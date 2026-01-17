@@ -1,11 +1,11 @@
 pipeline {
-    agent {
-        docker {
-            image 'node:18-alpine'
-        }
-    }
-    stages {
+    agent any
 
+    tools {
+        nodejs 'NodeJS'  // This references the NodeJS installation configured in Jenkins
+    }
+
+    stages {
         stage('Checkout') {
             steps {
                 git branch: 'main',
@@ -39,9 +39,10 @@ pipeline {
             steps {
                 sh '''
                     npm run start &
-                    sleep 5
+                    NPM_PID=$!
+                    sleep 10
                     curl http://localhost:3000 || echo "App started"
-                    pkill -f "next start" || true
+                    kill $NPM_PID || true
                 '''
             }
         }
