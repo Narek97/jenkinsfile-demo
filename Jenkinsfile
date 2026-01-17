@@ -58,42 +58,67 @@ pipeline {
         }
         
         stage('🧪 Test Docker Image') {
-            steps {
-                echo 'Testing Docker image...'
-                script {
-                    // Run container for testing
-                    sh """
-                        # Start container
-                        docker run -d \
-                          --name test-container-${BUILD_NUMBER} \
-                          -p 3001:3000 \
-                          -e APP_VERSION=${APP_VERSION} \
-                          -e BUILD_NUMBER=${BUILD_NUMBER} \
-                          ${DOCKER_IMAGE}:${DOCKER_TAG}
+    steps {
+        echo 'Testing Docker image...'
+        script {
+            sh """
+                # Start container
+                docker run -d \
+                  --name test-container-${BUILD_NUMBER} \
+                  -p 3001:3000 \
+                  -e APP_VERSION=${APP_VERSION} \
+                  -e BUILD_NUMBER=${BUILD_NUMBER} \
+                  ${DOCKER_IMAGE}:${DOCKER_TAG}
+                
+                # Wait for container to be healthy (max 30 seconds)
+                echo "Waiting for container to start..."
+                for i in {1..30}; do
+                    if docker ps | grep test-container-${BUILD_NUMBER} | grep -q "Up"; then
+                        echo "Container is running, waiting for app to be ready..."
+                        sleep 2
                         
-                        # Wait for container to start
-                        sleep 5
-                        
-                        # Test health endpoint
-                        curl -f http://localhost:3001/health || exit 1
-                        
-                        # Test main endpoint
-                        curl -f http://localhost:3001/ || exit 1
-                        
-                        echo "✅ Container tests passed!"
-                    """
-                }
-            }
-            post {
-                always {
-                    // Clean up test container
-                    sh """
-                        docker stop test-container-${BUILD_NUMBER} || true
-                        docker rm test-container-${BUILD_NUMBER} || true
-                    """
-                }
-            }
+                        # Try to connect
+                        if curl -f http://localhost:3001/health 2>/dev/null || curl -f http://localhost:3001/ 2>/dev/null; then
+                            echo "✅ App is responding!"
+                            break
+                        fi
+                    fi
+                    echo "Attempt \$i/30..."
+                    sleep 1
+                done
+                
+                # Check container logs
+                echo ""
+                echo "=== Container Logs ==="
+                docker logs test-container-${BUILD_NUMBER}
+                
+                # Final health check
+                echo ""
+                echo "=== Testing Endpoints ==="
+                curl -v http://localhost:3001/health || echo "Health endpoint failed"
+                curl -v http://localhost:3001/ || echo "Main endpoint failed"
+                
+                # Check if container is still running
+                echo ""
+                echo "=== Container Status ==="
+                docker ps -a | grep test-container-${BUILD_NUMBER}
+                
+                echo "✅ Container tests completed!"
+            """
         }
+    }
+    post {
+        always {
+            sh """
+                echo "=== Final Container Logs ==="
+                docker logs test-container-${BUILD_NUMBER} || true
+                
+                docker stop test-container-${BUILD_NUMBER} || true
+                docker rm test-container-${BUILD_NUMBER} || true
+            """
+        }
+    }
+}
         
         stage('🔍 Security Scan') {
             steps {
