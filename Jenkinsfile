@@ -1,10 +1,6 @@
 pipeline {
     agent any
 
-    tools {
-        nodejs 'NodeJS_18'   // Make sure this Node version exists in Jenkins
-    }
-
     stages {
 
         stage('Checkout') {
@@ -15,19 +11,24 @@ pipeline {
             }
         }
 
-        stage('Install dependencies') {
+        stage('Check Node & NPM') {
             steps {
                 sh '''
-                    npm install
+                    node -v
+                    npm -v
                 '''
+            }
+        }
+
+        stage('Install dependencies') {
+            steps {
+                sh 'npm install'
             }
         }
 
         stage('Build') {
             steps {
-                sh '''
-                    npm run build
-                '''
+                sh 'npm run build'
             }
         }
 
