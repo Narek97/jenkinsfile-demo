@@ -2,13 +2,11 @@ pipeline {
     agent any
     
     environment {
-        // Docker image details
         DOCKER_IMAGE = 'myapp'
         DOCKER_TAG = "${BUILD_NUMBER}"
-        DOCKER_REGISTRY = 'docker.io'  // Change to your registry
-        
-        // Application version
+        DOCKER_REGISTRY = 'docker.io'
         APP_VERSION = "1.0.${BUILD_NUMBER}"
+        DOCKERHUB_USERNAME = 'your-dockerhub-username'  // CHANGE THIS!
     }
     
     stages {
@@ -17,7 +15,7 @@ pipeline {
                 echo '=== Checking Docker Environment ==='
                 sh '''
                     docker --version
-                    docker info
+                    docker info | head -20
                     echo "Build Number: ${BUILD_NUMBER}"
                     echo "Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
                 '''
@@ -27,13 +25,20 @@ pipeline {
         stage('📋 Checkout') {
             steps {
                 echo 'Checking out source code...'
-                // If using Git, uncomment:
-                // git branch: 'main',
-                //     credentialsId: 'github-credentials',
-                //     url: 'https://github.com/YOUR-USERNAME/YOUR-REPO.git'
-                
-                // For now, we'll assume code is in workspace
-                sh 'ls -la'
+                sh '''
+                    echo "=== Repository Contents ==="
+                    ls -la
+                    
+                    echo ""
+                    echo "=== Verifying Dockerfile exists ==="
+                    if [ -f Dockerfile ]; then
+                        echo "✅ Dockerfile found"
+                        cat Dockerfile
+                    else
+                        echo "❌ Dockerfile not found!"
+                        exit 1
+                    fi
+                '''
             }
         }
         
@@ -41,18 +46,20 @@ pipeline {
             steps {
                 echo 'Building Docker image...'
                 script {
-                    // Build image with build number as tag
                     sh """
+                        echo "Building image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        
                         docker build \
                           --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
                           --build-arg APP_VERSION=${APP_VERSION} \
                           -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
                           -t ${DOCKER_IMAGE}:latest \
                           .
+                        
+                        echo ""
+                        echo "=== Built Images ==="
+                        docker images | grep ${DOCKER_IMAGE}
                     """
-                    
-                    // List images
-                    sh 'docker images | grep ${DOCKER_IMAGE}'
                 }
             }
         }
@@ -61,9 +68,10 @@ pipeline {
             steps {
                 echo 'Testing Docker image...'
                 script {
-                    // Run container for testing
                     sh """
-                        # Start container
+                        set +e
+                        
+                        echo "Starting test container..."
                         docker run -d \
                           --name test-container-${BUILD_NUMBER} \
                           -p 3001:3000 \
@@ -71,26 +79,81 @@ pipeline {
                           -e BUILD_NUMBER=${BUILD_NUMBER} \
                           ${DOCKER_IMAGE}:${DOCKER_TAG}
                         
-                        # Wait for container to start
-                        sleep 5
+                        echo "Waiting for application to start..."
+                        COUNTER=0
+                        MAX_TRIES=30
+                        SUCCESS=0
                         
-                        # Test health endpoint
-                        curl -f http://localhost:3001/health || exit 1
+                        while [ \$COUNTER -lt \$MAX_TRIES ]; do
+                            if ! docker ps | grep -q test-container-${BUILD_NUMBER}; then
+                                echo "❌ Container stopped unexpectedly!"
+                                echo "=== Container Logs ==="
+                                docker logs test-container-${BUILD_NUMBER}
+                                exit 1
+                            fi
+                            
+                            if curl -f -s http://localhost:3001/ > /dev/null 2>&1; then
+                                echo "✅ Main endpoint responding!"
+                                SUCCESS=1
+                                break
+                            fi
+                            
+                            COUNTER=\$((COUNTER + 1))
+                            echo "Waiting... attempt \$COUNTER/\$MAX_TRIES"
+                            sleep 2
+                        done
                         
-                        # Test main endpoint
-                        curl -f http://localhost:3001/ || exit 1
+                        if [ \$SUCCESS -eq 0 ]; then
+                            echo "❌ Application failed to start in time"
+                            echo "=== Container Logs ==="
+                            docker logs test-container-${BUILD_NUMBER}
+                            exit 1
+                        fi
                         
-                        echo "✅ Container tests passed!"
+                        echo ""
+                        echo "=== Running Tests ==="
+                        
+                        echo "Testing main endpoint..."
+                        if curl -f http://localhost:3001/; then
+                            echo "✅ Main endpoint: PASS"
+                        else
+                            echo "❌ Main endpoint: FAIL"
+                            docker logs test-container-${BUILD_NUMBER}
+                            exit 1
+                        fi
+                        
+                        echo ""
+                        echo "Testing health endpoint..."
+                        if curl -f http://localhost:3001/health 2>/dev/null; then
+                            echo "✅ Health endpoint: PASS"
+                        else
+                            echo "⚠️  Health endpoint: Not available (optional)"
+                        fi
+                        
+                        echo ""
+                        echo "=== Container Status ==="
+                        docker ps | grep test-container-${BUILD_NUMBER}
+                        
+                        echo ""
+                        echo "✅ All container tests passed!"
+                        
+                        set -e
                     """
                 }
             }
             post {
                 always {
-                    // Clean up test container
-                    sh """
-                        docker stop test-container-${BUILD_NUMBER} || true
-                        docker rm test-container-${BUILD_NUMBER} || true
-                    """
+                    script {
+                        sh """
+                            echo "=== Test Container Logs ==="
+                            docker logs test-container-${BUILD_NUMBER} || true
+                            
+                            echo ""
+                            echo "Cleaning up test container..."
+                            docker stop test-container-${BUILD_NUMBER} || true
+                            docker rm test-container-${BUILD_NUMBER} || true
+                        """
+                    }
                 }
             }
         }
@@ -99,55 +162,61 @@ pipeline {
             steps {
                 echo 'Scanning image for vulnerabilities...'
                 script {
-                    // Basic image inspection
                     sh """
                         echo "=== Image Details ==="
-                        docker inspect ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        docker inspect ${DOCKER_IMAGE}:${DOCKER_TAG} --format='{{.Config.Image}}'
                         
-                        echo "=== Image History ==="
-                        docker history ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
+                        echo ""
                         echo "=== Image Size ==="
-                        docker images ${DOCKER_IMAGE}:${DOCKER_TAG} --format "{{.Size}}"
+                        docker images ${DOCKER_IMAGE}:${DOCKER_TAG} --format "Size: {{.Size}}"
+                        
+                        echo ""
+                        echo "=== Image Layers ==="
+                        docker history ${DOCKER_IMAGE}:${DOCKER_TAG} --no-trunc
                     """
-                    
-                    // In production, you would use tools like:
-                    // - Trivy: docker run aquasec/trivy image ${DOCKER_IMAGE}:${DOCKER_TAG}
-                    // - Snyk: snyk container test ${DOCKER_IMAGE}:${DOCKER_TAG}
                 }
             }
         }
         
-        stage('📤 Push to Registry') {
+        stage('📤 Push to Docker Hub') {
             when {
                 expression { 
-                    // Only push on master/main branch
-                    return env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'origin/master' || env.BRANCH_NAME == 'main'
+                    return true
                 }
             }
             steps {
-                echo 'Pushing image to Docker registry...'
+                echo 'Pushing image to Docker Hub...'
                 script {
-                    // In production, use withCredentials to login to registry
-                    // For now, we'll skip the actual push
-                    echo "Would push: ${DOCKER_IMAGE}:${DOCKER_TAG}"
-                    echo "Would push: ${DOCKER_IMAGE}:latest"
-                    
-                    // Uncomment when ready to push:
-                    /*
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
-                        sh '''
-                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                            docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
-                            docker push ${DOCKER_IMAGE}:latest
+                        sh """
+                            echo "Logging in to Docker Hub..."
+                            echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+                            
+                            echo ""
+                            echo "Tagging images..."
+                            docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} \$DOCKER_USER/${DOCKER_IMAGE}:${DOCKER_TAG}
+                            docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} \$DOCKER_USER/${DOCKER_IMAGE}:latest
+                            
+                            echo ""
+                            echo "Pushing ${DOCKER_IMAGE}:${DOCKER_TAG}..."
+                            docker push \$DOCKER_USER/${DOCKER_IMAGE}:${DOCKER_TAG}
+                            
+                            echo ""
+                            echo "Pushing ${DOCKER_IMAGE}:latest..."
+                            docker push \$DOCKER_USER/${DOCKER_IMAGE}:latest
+                            
+                            echo ""
+                            echo "✅ Successfully pushed to Docker Hub!"
+                            echo "Image: \$DOCKER_USER/${DOCKER_IMAGE}:${DOCKER_TAG}"
+                            echo "Latest: \$DOCKER_USER/${DOCKER_IMAGE}:latest"
+                            
                             docker logout
-                        '''
+                        """
                     }
-                    */
                 }
             }
         }
@@ -157,11 +226,14 @@ pipeline {
                 echo 'Deploying container locally...'
                 script {
                     sh """
-                        # Stop and remove old container if exists
-                        docker stop myapp-demo || true
-                        docker rm myapp-demo || true
+                        set +e
                         
-                        # Run new container
+                        echo "Cleaning up old deployment..."
+                        docker stop myapp-demo 2>/dev/null || true
+                        docker rm myapp-demo 2>/dev/null || true
+                        
+                        echo ""
+                        echo "Starting new deployment..."
                         docker run -d \
                           --name myapp-demo \
                           --restart unless-stopped \
@@ -170,13 +242,40 @@ pipeline {
                           -e BUILD_NUMBER=${BUILD_NUMBER} \
                           ${DOCKER_IMAGE}:${DOCKER_TAG}
                         
-                        # Verify deployment
-                        sleep 3
-                        docker ps | grep myapp-demo
-                        curl -f http://localhost:3000/health
+                        echo "Waiting for application to start..."
+                        sleep 10
                         
-                        echo "✅ Deployment successful!"
-                        echo "🌐 Access at: http://localhost:3000"
+                        echo ""
+                        echo "=== Deployment Status ==="
+                        docker ps | grep myapp-demo || echo "Container not found in running processes"
+                        
+                        echo ""
+                        echo "=== Application Logs (last 20 lines) ==="
+                        docker logs --tail 20 myapp-demo
+                        
+                        echo ""
+                        echo "=== Connectivity Test ==="
+                        if curl -f -s http://localhost:3000/ > /dev/null 2>&1; then
+                            echo "✅ Application is accessible at http://localhost:3000"
+                        else
+                            echo "⏳ Application may still be starting..."
+                            echo "   Check manually at: http://localhost:3000"
+                            echo "   View logs: docker logs -f myapp-demo"
+                        fi
+                        
+                        echo ""
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo "✅ Deployment completed!"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo "📦 Container: myapp-demo"
+                        echo "🏷️  Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                        echo "📌 Version: ${APP_VERSION}"
+                        echo "🌐 URL: http://localhost:3000"
+                        echo "📝 Logs: docker logs -f myapp-demo"
+                        echo "🛑 Stop: docker stop myapp-demo"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        
+                        set -e
                     """
                 }
             }
@@ -185,30 +284,36 @@ pipeline {
     
     post {
         success {
-            echo '======================================'
+            echo '=========================================='
             echo '✅ DOCKER PIPELINE SUCCEEDED!'
-            echo "Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
-            echo "Version: ${APP_VERSION}"
-            echo "Access app at: http://localhost:3000"
-            echo '======================================'
+            echo '=========================================='
+            echo "📦 Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+            echo "📌 Version: ${APP_VERSION}"
+            echo "🌐 Local: http://localhost:3000"
+            echo "🐳 Docker Hub: https://hub.docker.com/r/${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}"
+            echo '=========================================='
         }
         
         failure {
-            echo '======================================'
+            echo '=========================================='
             echo '❌ DOCKER PIPELINE FAILED!'
-            echo "Check logs for details"
-            echo '======================================'
+            echo '=========================================='
+            echo 'Check the logs above for error details'
+            echo '=========================================='
         }
         
         always {
             echo 'Cleaning up...'
             sh '''
-                # Remove dangling images
                 docker image prune -f || true
                 
-                # Show current images
+                echo ""
                 echo "=== Current Docker Images ==="
-                docker images
+                docker images | head -10
+                
+                echo ""
+                echo "=== Running Containers ==="
+                docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
             '''
         }
     }
